@@ -175,7 +175,8 @@ char	Eunknowngroup[] = "unknown group";
 char	Eunknownuser[] = "unknown user";
 char	Ewstatbuffer[] = "bogus wstat buffer";
 
-ulong	msize = IOHDRSZ+8192;
+//ulong	msize = IOHDRSZ+8192;
+ulong	msize = 0xFFFF;  /* accept messages as long as length fits in 16 bits */
 uchar*	rxbuf;
 uchar*	txbuf;
 void*	databuf;
