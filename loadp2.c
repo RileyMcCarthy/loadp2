@@ -67,6 +67,10 @@ static int mem_argv_bytes = 0;
 static char *mem_argv_data = NULL;
 static bool load_to_flash = false;
 
+int long_timeout_ms = 500;
+int short_timeout_ms = 5;
+int fifo_timeout_ms = 100; /* later adjusted */
+
 int get_loader_baud(int ubaud, int lbaud);
 static void RunScript(char *script);
 
@@ -139,7 +143,7 @@ static void Usage(const char *msg)
         printf("%s\n", msg);
     }
 printf("\
-loadp2 - a loader for the propeller 2 - version 0.076 " __DATE__ "\n\
+loadp2 - a loader for the propeller 2 - version 0.077 " __DATE__ "\n\
 usage: loadp2\n\
          [ -p port ]               serial port\n\
          [ -b baud ]               user baud rate (default is %d)\n\
@@ -342,7 +346,7 @@ sendAddressSize(uint32_t address, uint32_t size)
     tx_raw_long(address);
     tx_raw_long(size);
     do {
-        r = rx_timeout(resp, 1, 500);
+        r = rx_timeout(resp, 1, long_timeout_ms);
         if (r != 1) {
             printf("sendAddressSize: timeout\n");
             return 't';
@@ -424,10 +428,10 @@ downloadData(uint8_t *data, uint32_t address, uint32_t size)
             }
             if (mode != 'k') {
                 if (mode == 'e') {
-                    // read the error message
+                    // read the error messages
                     uint8_t errmsg[256];
                     memset(errmsg, 0, sizeof(errmsg));
-                    int r = rx_timeout(errmsg, 255, 2000);
+                    int r = rx_timeout(errmsg, 255, long_timeout_ms);
                     if (r < 0) r = 0;
                     errmsg[r] = 0;
                     printf("Error from device: %s\n", errmsg);
@@ -676,9 +680,7 @@ int loadfilesingle(char *fname)
         tx( (uint8_t *)buffer, strlen(buffer) );
         tx((uint8_t *)"?", 1);
         wait_drain();
-        //msleep(100+fifo_size*10*1000/loader_baud);
-        //num = rx_timeout((uint8_t *)buffer, 1, 100);
-        num = rx_timeout((uint8_t *)buffer, 1, 100 + fifo_size*10000/loader_baud);
+        num = rx_timeout((uint8_t *)buffer, 1, 100 + short_timeout_ms);
         if (num >= 0) buffer[num] = 0;
         else buffer[0] = 0;
         if (strcmp(buffer, "."))
@@ -694,10 +696,8 @@ int loadfilesingle(char *fname)
     {
         tx((uint8_t *)"~", 1);   // Added for Prop2-v28
         wait_drain();
-        msleep(fifo_size*10*1000/loader_baud);
     }
 
-//    msleep(100);
     if (verbose) printf("%s loaded\n", fname);
     return 0;
 }
@@ -741,12 +741,9 @@ static int verify_chksum(unsigned chksum)
     unsigned recv_chksum = 0;
     int num;
     wait_drain();
-    //msleep(1+fifo_size*10*1000/loader_baud);
-    //num = rx_timeout((uint8_t *)buffer, 3, 400);
-    num = rx_timeout((uint8_t *)buffer, 3, 2000 + fifo_size*10000/loader_baud);
+    num = rx_timeout((uint8_t *)buffer, 3, long_timeout_ms);
     if (num != 3) {
         printf("ERROR: timeout waiting for checksum at end: got %d\n", num);
-        printf("Try increasing the FIFO setting if not large enough for your setup\n");
         promptexit(1);
     }
     recv_chksum = (buffer[0] - '@') << 4;
@@ -793,7 +790,7 @@ int loadfile(char *fname, int address)
         int retry;
         // receive checksum, verify it's "@@ "
         wait_drain();
-        msleep(1+fifo_size*10*1000/loader_baud); // wait for external USB fifo to drain
+        msleep(fifo_timeout_ms); // wait for external USB fifo to drain
         flush_input();
         msleep(50); // wait for code to start up
         tx_raw_byte(0x80);
@@ -803,8 +800,7 @@ int loadfile(char *fname, int address)
             // send autobaud character
             tx_raw_byte(0x80);
             wait_drain();
-            msleep(10);
-            num = rx_timeout((uint8_t *)buffer, 3, 200);
+            num = rx_timeout((uint8_t *)buffer, 3, fifo_timeout_ms);
             if (num == 3) break;
         }
         if (num != 3) {
@@ -816,7 +812,7 @@ int loadfile(char *fname, int address)
         // we do, throw it away
         if (buffer[0] == 0 && buffer[2] == '@') {
             buffer[0] = buffer[2];
-            rx_timeout((uint8_t *)&buffer[2], 1, 100);
+            rx_timeout((uint8_t *)&buffer[2], 1, short_timeout_ms);
         }
         if (buffer[0] != '@' || buffer[1] != '@') {
             printf("ERROR: got incorrect initial chksum: %c%c%c (%02x %02x %02x)\n", buffer[0], buffer[1], buffer[2], buffer[0], buffer[1], buffer[2]);
@@ -968,8 +964,7 @@ checkp2_and_init(char *Port, int baudrate, int retries)
         flush_input();
         tx((uint8_t *)"> Prop_Chk 0 0 0 0  ", 20);
         wait_drain();
-        msleep(50+20*10*1000/loader_baud); // wait at least for 20 chars to empty through any fifo at the loader baud rate 
-        num = rx_timeout((uint8_t *)buffer, 20, 10+20*10*1000/loader_baud); // read 20 characters 
+        num = rx_timeout((uint8_t *)buffer, 20, fifo_timeout_ms); // read 20 characters 
         if (num >= 0) buffer[num] = 0;
         else {
             buffer[0] = 0;
@@ -1293,6 +1288,7 @@ int main(int argc, char **argv)
         }
     }
 
+    fifo_timeout_ms = (fifo_size * 10 * 1000 + loader_baud - 1) / loader_baud;
     if (i < argc) {
         int num_argc = 1;
         mem_argv_bytes = 5; // for ARGv plus trailing 0
@@ -1530,7 +1526,7 @@ static int scriptRecv(char *string)
             printf("ERROR: timeout waiting for string [%s]\n", string);
             return 0;
         }
-        num = rx_timeout((uint8_t *)buffer, 1, 1);
+        num = rx_timeout((uint8_t *)buffer, 1, short_timeout_ms);
         if ((num <= 0)) {
             continue;
         }
