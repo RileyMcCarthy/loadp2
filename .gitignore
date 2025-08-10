@@ -1,6 +1,10 @@
 *.bin
+*.binary
+*.lst
 *.exe
 *.zip
 build
 build-win32
 build-macosx
+loadp2.linux
+loadp2.mac
