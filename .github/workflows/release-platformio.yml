@@ -1,0 +1,220 @@
+name: Create PlatformIO Release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Git tag to create release from'
+        required: true
+        default: 'v075'
+
+jobs:
+  build-multiplatform:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+    - name: Set up MSYS2
+      if: runner.os == 'Windows'
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: true
+        install: >-
+          mingw-w64-x86_64-gcc
+          mingw-w64-x86_64-make
+          bison
+          make
+          vim
+    
+    # Checkout loadp2 repo and setup environment
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.tag || github.ref }}
+        submodules: recursive
+    
+    - name: Checkout spin2cpp as a tool
+      uses: actions/checkout@v4
+      with:
+        repository: totalspectrum/spin2cpp
+        path: ./tools
+    
+    # make spin2cpp
+    - name: Make targets (Windows only)
+      if: runner.os == 'Windows'
+      run: |
+        cd ./tools
+        msys2 -c "make"
+    
+    - name: Make targets (Non-Windows)
+      if: runner.os != 'Windows'
+      run: |
+        cd ./tools
+        make
+    
+    # make loadp2
+    - name: Make loadp2 (Windows only)
+      if: runner.os == 'Windows'
+      run: msys2 -c "make OSFILE=osint_mingw.c CC=x86_64-w64-mingw32-gcc P2ASM='${{github.workspace}}/tools/build/flexspin -2'"
+    
+    - name: Make targets (Non-Windows)
+      if: runner.os != 'Windows'
+      run: make P2ASM="${{github.workspace}}/tools/build/flexspin -2"
+    
+    # Create build directory
+    - name: Create release directory
+      run: |
+        mkdir -p 'release'
+    
+    - name: Copy loadp2 executable (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        mkdir -p release/windows
+        msys2 -c "cp build/loadp2.exe release/windows/loadp2.exe"
+    
+    - name: Copy loadp2 executable (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        mkdir -p release/linux
+        cp build/loadp2 release/linux/loadp2
+    
+    - name: Copy loadp2 executable (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        mkdir -p release/macos
+        cp build/loadp2 release/macos/loadp2
+    
+    - name: Copy Flash and SD Loaders
+      run: |
+        cp board/P2ES_sdcard.bin release/
+        cp board/P2ES_flashloader.bin release/
+    
+    # Uploading build files
+    - name: Archive results
+      uses: actions/upload-artifact@v4
+      with:
+        name: loadp2-${{ runner.os }}
+        path: 'release/'
+
+  create-platformio-release:
+    needs: build-multiplatform
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.tag || github.ref }}
+        submodules: recursive
+    
+    - name: Create artifact dir
+      run: mkdir -p ./artifacts
+    
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: ./artifacts
+    
+    - name: Extract version from tag
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          VERSION="${{ github.event.inputs.tag }}"
+        else
+          VERSION="${{ github.ref_name }}"
+        fi
+        # Remove 'v' prefix if present
+        VERSION=${VERSION#v}
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "tag_name=$VERSION" >> $GITHUB_OUTPUT
+    
+    - name: Create PlatformIO package.json
+      run: |
+        cat > package.json << 'EOF'
+        {
+          "name": "tool-loadp2",
+          "version": "${{ steps.version.outputs.version }}",
+          "description": "Propeller 2 uploader for PlatformIO",
+          "keywords": [
+            "uploader",
+            "parallax",
+            "propeller",
+            "p2",
+            "platformio"
+          ],
+          "homepage": "https://github.com/totalspectrum/loadp2",
+          "license": "GPL-2.0-or-later",
+          "repository": {
+            "type": "git",
+            "url": "https://github.com/totalspectrum/loadp2.git"
+          }
+        }
+        EOF
+    
+    - name: Create PlatformIO package structure
+      run: |
+        # Create the package directory structure
+        mkdir -p platformio-package/bin
+        
+        # Copy all platform executables to bin directory with platform folders
+        cp -r artifacts/loadp2-Windows/* platformio-package/bin/
+        cp -r artifacts/loadp2-Linux/* platformio-package/bin/
+        cp -r artifacts/loadp2-macOS/* platformio-package/bin/
+        
+        # Copy package.json to the package directory
+        cp package.json platformio-package/
+        
+        # Copy documentation files
+        cp README.md platformio-package/
+        cp LICENSE platformio-package/
+        
+        # Clean up artifacts directory
+        rm -rf artifacts
+    
+    - name: Set executable permissions
+      run: |
+        chmod +x platformio-package/bin/linux/loadp2
+        chmod +x platformio-package/bin/macos/loadp2
+    
+    - name: Create PlatformIO package zip
+      run: |
+        cd platformio-package
+        zip -r ../tool-loadp2.zip .
+        cd ..
+    
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+        name: loadp2 v${{ steps.version.outputs.version }}
+        body: |
+          ## loadp2 v${{ steps.version.outputs.version }}
+          
+          Propeller 2 uploader for PlatformIO
+          
+          ### Installation
+          
+          Download the `tool-loadp2.zip` file and install it as a PlatformIO tool:
+          
+          ```bash
+          pio platform install --with-package tool-loadp2.zip
+          ```
+          
+          ### Usage
+          
+          This tool provides the `loadp2` executable for uploading programs to Parallax Propeller 2 chips.
+          
+          ### Supported Platforms
+          - Linux x86_64
+          - Windows x86_64  
+          - macOS x86_64
+        files: tool-loadp2.zip
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
