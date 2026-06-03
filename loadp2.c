@@ -1,7 +1,7 @@
 /*
  *
  * Copyright (c) 2017-2019 by Dave Hein
- * Copyright (c) 2019-2024 Total Spectrum Software Inc.
+ * Copyright (c) 2019-2026 Total Spectrum Software Inc.
  * Based on p2load written by David Betz
  *
  * MIT License
@@ -143,7 +143,7 @@ static void Usage(const char *msg)
         printf("%s\n", msg);
     }
 printf("\
-loadp2 - a loader for the propeller 2 - version 0.077 " __DATE__ "\n\
+loadp2 - a loader for the propeller 2 - version 0.078 " __DATE__ "\n\
 usage: loadp2\n\
          [ -p port ]               serial port\n\
          [ -b baud ]               user baud rate (default is %d)\n\
@@ -906,7 +906,11 @@ int loadfile(char *fname, int address)
 
         g_highest_hub_addr = (g_highest_hub_addr + 3) & ~3;
         ptr32 = (uint32_t *)bootloader;
-        ptr32[2] = g_highest_hub_addr;
+        /* ptr32[0] is a jump instruction
+           ptr32[1] is a checksum long
+           ptr32[2] is the number of longs
+        */
+        ptr32[2] = g_highest_hub_addr >> 2; /* convert to longs */
 
         /* now calculate the checksum of the bootloader itself */
         uint32_t boot_sum = 0;
